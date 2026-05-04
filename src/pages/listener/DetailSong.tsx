@@ -1,0 +1,424 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft, Heart, PlusCircle, Play } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import { toast } from '../../lib/toast';
+import MusicPlayer from '../../components/MusicPlayer';
+import {
+  AddToPlaylistModal,
+  usePlaylistAddFlow,
+  usePlaybackQueue,
+  toPlaybackSong,
+} from '../../components/PlaylistPlayback';
+import SongHashtagChips, { type SongHashtag } from '../../components/SongHashtagChips';
+import SongCoverImage from '../../components/SongCoverImage';
+import type { SongCoverFields } from '../../lib/songCover';
+
+const API_BASE = 'http://localhost:5000/api/music';
+
+interface SongArtist {
+  artist_id: number;
+  artist_name: string;
+}
+
+interface Song extends SongCoverFields {
+  song_id: number;
+  title: string;
+  artist?: string;
+  artists?: SongArtist[];
+  album_id?: number | null;
+  duration?: number | null;
+  lyrics?: string | null;
+  status?: string | null;
+  is_new?: number | null;
+  play_count?: number;
+  like_count?: number;
+  isFavorite?: boolean;
+  hashtags?: SongHashtag[];
+}
+
+function favoriteIdsFromResponse(data: unknown): Set<string> {
+  if (!Array.isArray(data)) return new Set();
+  const ids: string[] = [];
+  for (const item of data) {
+    if (item != null && typeof item === 'object') {
+      const o = item as Record<string, unknown>;
+      const id = o.songId ?? o.song_id ?? o.id;
+      if (id != null) ids.push(String(id));
+    } else if (item != null) {
+      ids.push(String(item));
+    }
+  }
+  return new Set(ids);
+}
+
+function mergeFavoriteFlags(list: Song[], favSet: Set<string>): Song[] {
+  return list.map((s) => ({ ...s, isFavorite: favSet.has(String(s.song_id)) }));
+}
+
+export default function DetailSong() {
+  const navigate = useNavigate();
+  const { songId: songIdParam } = useParams<{ songId: string }>();
+  const songIdNum = Number(songIdParam);
+  const { user } = useAuth();
+
+  const [song, setSong] = useState<Song | null>(null);
+  const [suggestions, setSuggestions] = useState<Song[]>([]);
+  const [loadingSong, setLoadingSong] = useState(true);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+
+  const { playlists, modalSong, openPlaylistModal, closePlaylistModal } = usePlaylistAddFlow(
+    API_BASE,
+    user?.id ?? null,
+  );
+  const {
+    currentSong: playerCurrentSong,
+    playIndexed,
+    handleNext,
+    handlePrevious,
+  } = usePlaybackQueue();
+
+  useEffect(() => {
+    if (!Number.isFinite(songIdNum) || songIdNum <= 0) {
+      setLoadingSong(false);
+      setSong(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const load = async () => {
+      setLoadingSong(true);
+      setSuggestions([]);
+      try {
+        const songRes = await fetch(`${API_BASE}/songs/${songIdNum}`);
+        if (!songRes.ok) {
+          if (songRes.status === 404) {
+            if (!cancelled) setSong(null);
+            return;
+          }
+          throw new Error();
+        }
+        const detail: Song = await songRes.json();
+
+        const favRes = user?.id
+          ? await fetch(`${API_BASE}/favorites/${user.id}`)
+          : null;
+        const favJson = favRes?.ok ? await favRes.json() : [];
+        const favSet = favoriteIdsFromResponse(favJson);
+
+        if (!cancelled) {
+          setSong({ ...detail, isFavorite: favSet.has(String(detail.song_id)) });
+        }
+
+        setLoadingSuggestions(true);
+        try {
+          const hashtagIds =
+            Array.isArray(detail.hashtags) && detail.hashtags.length > 0
+              ? detail.hashtags
+                  .map((h) => Number(h.hashtag_id))
+                  .filter((n) => !Number.isNaN(n))
+              : [];
+
+          if (hashtagIds.length === 0) {
+            if (!cancelled) setSuggestions([]);
+            return;
+          }
+
+          const q = hashtagIds.join(',');
+          const sugRes = await fetch(
+            `${API_BASE}/songs/by-hashtag?q=${encodeURIComponent(q)}`,
+          );
+          if (!sugRes.ok) throw new Error();
+          const rawList: Song[] = (await sugRes.json()) || [];
+          const filtered = rawList
+            .filter((s) => s.song_id !== songIdNum)
+            .slice(0, 8);
+          if (!cancelled) setSuggestions(mergeFavoriteFlags(filtered, favSet));
+        } catch {
+          if (!cancelled) {
+            toast.error('Không tải được gợi ý', {
+              description: 'Thử lại sau hoặc kiểm tra server.',
+            });
+            setSuggestions([]);
+          }
+        } finally {
+          if (!cancelled) setLoadingSuggestions(false);
+        }
+      } catch {
+        if (!cancelled) {
+          toast.error('Không tải được bài hát');
+          setSong(null);
+        }
+      } finally {
+        if (!cancelled) setLoadingSong(false);
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [songIdNum, user?.id]);
+
+  const playMainQueueFromIndex = useCallback(
+    (startSongId: number) => {
+      if (!song) return;
+      const queueTracks = [
+        toPlaybackSong(song),
+        ...suggestions.map(toPlaybackSong),
+      ];
+      const idx = queueTracks.findIndex((t) => Number(t.song_id) === Number(startSongId));
+      if (idx >= 0) playIndexed(queueTracks, idx);
+    },
+    [song, suggestions, playIndexed],
+  );
+
+  const handleToggleFavorite = useCallback(
+    async (targetSongId: number) => {
+      if (!user?.id) {
+        toast.error('Chưa đăng nhập', {
+          description: 'Hãy đăng nhập để dùng yêu thích.',
+        });
+        return;
+      }
+
+      const toggleInSong = (prev: Song | null) =>
+        prev?.song_id === targetSongId ? { ...prev, isFavorite: !prev.isFavorite } : prev;
+      const toggleInList = (list: Song[]) =>
+        list.map((s) =>
+          s.song_id === targetSongId ? { ...s, isFavorite: !s.isFavorite } : s,
+        );
+
+      setSong(toggleInSong);
+      setSuggestions(toggleInList);
+
+      try {
+        const res = await fetch(`${API_BASE}/favorites/toggle`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: user.id, songId: targetSongId }),
+        });
+        if (!res.ok) throw new Error();
+        const result = (await res.json()) as { isFavorite?: boolean };
+        const isFav = result.isFavorite ?? false;
+        setSong((prev) =>
+          prev?.song_id === targetSongId ? { ...prev, isFavorite: isFav } : prev,
+        );
+        setSuggestions((prev) =>
+          prev.map((s) => (s.song_id === targetSongId ? { ...s, isFavorite: isFav } : s)),
+        );
+        toast.success(isFav ? 'Đã thêm vào yêu thích' : 'Đã xóa khỏi yêu thích');
+      } catch {
+        setSong(toggleInSong);
+        setSuggestions(toggleInList);
+        toast.error('Không thể cập nhật yêu thích');
+      }
+    },
+    [user?.id],
+  );
+
+  const isPlayerLiked = (() => {
+    if (!playerCurrentSong || !song) return false;
+    const id = Number(playerCurrentSong.song_id);
+    if (song.song_id === id) return song.isFavorite ?? false;
+    return suggestions.find((s) => s.song_id === id)?.isFavorite ?? false;
+  })();
+
+  if (loadingSong) {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center">
+        Đang tải...
+      </div>
+    );
+  }
+
+  if (!song) {
+    return (
+      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center gap-4">
+        <p className="text-gray-400">Không tìm thấy bài hát.</p>
+        <button
+          type="button"
+          onClick={() => navigate(-1)}
+          className="text-purple-400 hover:text-purple-300"
+        >
+          Quay lại
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-black text-white pb-36">
+      <div className="max-w-screen-2xl mx-auto p-6">
+        <button
+          type="button"
+          onClick={() => navigate(-1)}
+          className="flex items-center gap-2 text-gray-400 hover:text-white mb-8 transition-colors"
+        >
+          <ArrowLeft className="w-5 h-5" />
+          Quay lại
+        </button>
+
+        <div className="flex flex-col md:flex-row gap-8 mb-12">
+          <div className="shrink-0 w-full md:w-72 aspect-square rounded-2xl overflow-hidden bg-zinc-900">
+            <SongCoverImage song={song} className="w-full h-full object-cover" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h1 className="text-3xl font-bold mb-2">{song.title}</h1>
+            <p className="text-gray-400 mb-6">
+              {song.artists && song.artists.length > 0
+                ? song.artists.map((a, i) => (
+                    <React.Fragment key={a.artist_id}>
+                      {i > 0 && ', '}
+                      <button
+                        type="button"
+                        className="hover:text-white transition-colors"
+                        onClick={() => navigate(`/artist/${a.artist_id}`)}
+                      >
+                        {a.artist_name}
+                      </button>
+                    </React.Fragment>
+                  ))
+                : (song.artist ?? 'Chưa xác định')}
+            </p>
+            {(song.hashtags?.length ?? 0) > 0 ? (
+              <div className="mb-6">
+                <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">Hashtag</p>
+                <SongHashtagChips hashtags={song.hashtags} maxVisible={null} />
+              </div>
+            ) : (
+              <p className="text-sm text-gray-600 mb-6">Chưa gắn hashtag.</p>
+            )}
+            {song.lyrics ? (
+              <div className="rounded-xl bg-zinc-900 border border-white/10 p-4 max-h-48 overflow-y-auto text-sm text-gray-300 whitespace-pre-wrap">
+                {song.lyrics}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">Chưa có lời bài hát.</p>
+            )}
+            <div className="flex flex-wrap gap-3 mt-6">
+              <button
+                type="button"
+                disabled={!song.file_url}
+                onClick={() => playMainQueueFromIndex(song.song_id)}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 font-medium transition-colors"
+              >
+                <Play className="w-5 h-5 fill-current" />
+                Phát nhạc
+              </button>
+              <button
+                type="button"
+                onClick={() => handleToggleFavorite(song.song_id)}
+                title="Yêu thích"
+                className="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10"
+              >
+                <Heart
+                  className={`w-6 h-6 ${
+                    song.isFavorite ? 'text-red-500 fill-current' : 'text-gray-400'
+                  }`}
+                />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => openPlaylistModal(e, song)}
+                title="Thêm vào playlist"
+                className="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10"
+              >
+                <PlusCircle className="w-6 h-6 text-gray-400" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <section>
+          <h2 className="text-xl font-bold mb-4">Gợi ý theo hashtag</h2>
+          {loadingSuggestions ? (
+            <p className="text-gray-500 text-sm">Đang tải gợi ý...</p>
+          ) : suggestions.length === 0 ? (
+            <p className="text-gray-500 text-sm">
+              Không có bài gợi ý (bài này chưa gắn hashtag hoặc chưa có bài cùng tag).
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              {suggestions.map((s) => (
+                  <div
+                    key={s.song_id}
+                    onClick={() => navigate(`/song/${s.song_id}`)}
+                    className="group p-4 rounded-2xl cursor-pointer transition-colors bg-zinc-900 hover:bg-zinc-800"
+                  >
+                    <div className="relative aspect-square mb-4 overflow-hidden rounded-xl">
+                      <SongCoverImage
+                        song={s}
+                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+                      />
+                    </div>
+                    <h3 className="font-bold text-sm truncate">{s.title}</h3>
+                    <p className="text-xs text-gray-400 truncate">
+                      {s.artists && s.artists.length > 0
+                        ? s.artists.map((a) => a.artist_name).join(', ')
+                        : (s.artist ?? '')}
+                    </p>
+                    <div className="mt-2 min-h-[1.25rem]">
+                      <SongHashtagChips hashtags={s.hashtags} maxVisible={2} dense />
+                    </div>
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        type="button"
+                        disabled={!s.file_url}
+                        title="Nghe trong hàng chờ"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          playMainQueueFromIndex(s.song_id);
+                        }}
+                      >
+                        <Play className="w-5 h-5 text-gray-400 hover:text-white fill-current transition-colors" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleFavorite(s.song_id);
+                        }}
+                        title="Yêu thích"
+                      >
+                        <Heart
+                          className={`w-5 h-5 transition-colors ${
+                            s.isFavorite
+                              ? 'text-red-500 fill-current'
+                              : 'text-gray-400 hover:text-white'
+                          }`}
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => openPlaylistModal(e, s)}
+                        title="Thêm vào playlist"
+                      >
+                        <PlusCircle className="w-5 h-5 text-gray-400 hover:text-white transition-colors" />
+                      </button>
+                    </div>
+                  </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+
+      <AddToPlaylistModal
+        song={modalSong}
+        playlists={playlists}
+        apiBase={API_BASE}
+        onClose={closePlaylistModal}
+      />
+
+      <MusicPlayer
+        currentSong={playerCurrentSong}
+        onNext={handleNext}
+        onPrevious={handlePrevious}
+        onToggleLike={handleToggleFavorite}
+        isLiked={isPlayerLiked}
+      />
+    </div>
+  );
+}
