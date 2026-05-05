@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { TrendingUp, Headset, Sparkles } from 'lucide-react';
-import SongHashtagChips, { type SongHashtag } from '../components/SongHashtagChips';
-import SongCoverImage from '../components/SongCoverImage';
+import { useEffect, useState } from 'react';
+import { TrendingUp, Sparkles } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import SongCard, { type SongCardSong } from '../components/SongCard';
+import type { SongHashtag } from '../components/SongHashtagChips';
 import type { SongCoverFields } from '../lib/songCover';
 
 const API_BASE = 'http://localhost:5000/api/music';
@@ -16,58 +15,7 @@ interface Song extends SongCoverFields {
   hashtags?: SongHashtag[];
 }
 
-const FALLBACK_COVER =
-  'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300&h=300&fit=crop';
-
-function SongCard(props: {
-  song: Song;
-  rankBadge?: number;
-  onNavigate: (id: number) => void;
-}) {
-  const { song, rankBadge, onNavigate } = props;
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onNavigate(song.song_id)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onNavigate(song.song_id);
-        }
-      }}
-      className="group bg-zinc-900/50 p-4 rounded-xl hover:bg-zinc-800 transition-all border border-white/5 relative cursor-pointer text-left"
-    >
-      <div className="relative aspect-square mb-4 overflow-hidden rounded-lg">
-        <SongCoverImage
-          song={song}
-          fallbackSrc={FALLBACK_COVER}
-          alt={song.title}
-          className="object-cover w-full h-full group-hover:scale-110 transition-transform duration-500"
-        />
-        {rankBadge != null && (
-          <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded text-[10px] font-bold text-white">
-            #{rankBadge}
-          </div>
-        )}
-      </div>
-
-      <h3 className="font-bold text-white truncate">{song.title}</h3>
-      <p className="text-sm text-gray-400 truncate">{song.artist ?? ''}</p>
-      <div className="mb-2 min-h-[1.125rem]">
-        <SongHashtagChips hashtags={song.hashtags} maxVisible={2} dense />
-      </div>
-
-      <div className="flex items-center gap-2 text-[11px] text-purple-400 font-medium">
-        <Headset size={14} />
-        <span>{(song.play_count ?? 0).toLocaleString()} lượt nghe</span>
-      </div>
-    </div>
-  );
-}
-
 export default function Trending() {
-  const navigate = useNavigate();
   const { user } = useAuth();
   const [songs, setSongs] = useState<Song[]>([]);
   const [suggestions, setSuggestions] = useState<Song[]>([]);
@@ -76,52 +24,31 @@ export default function Trending() {
 
   useEffect(() => {
     let cancelled = false;
-    const fetchTrending = async () => {
-      try {
-        const response = await fetch(`${API_BASE}/trending`);
-        const data = await response.json();
+    fetch(`${API_BASE}/trending`)
+      .then(async (res) => {
+        const data = await res.json();
         if (cancelled) return;
-        if (response.ok && Array.isArray(data)) {
-          setSongs(data);
-        } else {
-          setSongs([]);
-        }
-      } catch {
-        if (!cancelled) setSongs([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    fetchTrending();
-    return () => {
-      cancelled = true;
-    };
+        setSongs(res.ok && Array.isArray(data) ? data : []);
+      })
+      .catch(() => { if (!cancelled) setSongs([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
     const userId = user?.id ?? (user as { _id?: number } | null)?._id;
-    if (!userId) {
-      setSuggestions([]);
-      return;
-    }
+    if (!userId) { setSuggestions([]); return; }
     let cancelled = false;
     setLoadingSuggestions(true);
     fetch(`${API_BASE}/trending/suggestions?userId=${encodeURIComponent(String(userId))}`)
       .then(async (res) => {
         const data = await res.json();
         if (cancelled) return;
-        if (res.ok && Array.isArray(data)) setSuggestions(data);
-        else setSuggestions([]);
+        setSuggestions(res.ok && Array.isArray(data) ? data : []);
       })
-      .catch(() => {
-        if (!cancelled) setSuggestions([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingSuggestions(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+      .catch(() => { if (!cancelled) setSuggestions([]); })
+      .finally(() => { if (!cancelled) setLoadingSuggestions(false); });
+    return () => { cancelled = true; };
   }, [user]);
 
   if (loading)
@@ -135,13 +62,13 @@ export default function Trending() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-14">
-        {Array.isArray(songs) && songs.length > 0 ? (
+        {songs.length > 0 ? (
           songs.map((song, index) => (
             <SongCard
               key={song.song_id}
-              song={song}
+              song={song as SongCardSong}
               rankBadge={index + 1}
-              onNavigate={(id) => navigate(`/song/${id}`)}
+              showPlayCount
             />
           ))
         ) : (
@@ -175,7 +102,7 @@ export default function Trending() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             {suggestions.map((song) => (
-              <SongCard key={song.song_id} song={song} onNavigate={(id) => navigate(`/song/${id}`)} />
+              <SongCard key={song.song_id} song={song as SongCardSong} showPlayCount />
             ))}
           </div>
         )}

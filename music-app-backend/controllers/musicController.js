@@ -564,7 +564,7 @@ const musicController = {
                  FROM songs s
                  INNER JOIN playlist_songs ps ON s.song_id = ps.songId
                  WHERE ps.playlistId = ?
-                 ORDER BY ps.added_at DESC`,
+                 ORDER BY ps.created_at DESC`,
                 [id]
             );
             res.status(200).json(parseSongRows(rows));

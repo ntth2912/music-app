@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Music, Trash2, Edit2, Loader2, Play, Sparkles, ListPlus } from 'lucide-react';
+import { Plus, Music, Trash2, Edit2, Loader2, Play, Sparkles, ListPlus, Heart, ExternalLink } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { usePlayback } from '../../context/PlaybackContext';
 import musicService from '../../services/musicService';
@@ -15,7 +15,7 @@ const API_BASE = 'http://localhost:5000/api/music';
 export default function ListenerPlaylists() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { playIndexed } = usePlayback();
+  const { playIndexed, toggleLike, likedSongs } = usePlayback();
   const { playlists: ctxPlaylists, fetchPlaylists } = usePlaylist();
 
   // Local editable copy of playlists (CRUD operations)
@@ -258,31 +258,45 @@ export default function ListenerPlaylists() {
                 return (
                   <div
                     key={song.song_id}
-                    className="shrink-0 w-40 group bg-white/5 rounded-2xl p-3 hover:bg-white/10 transition-all border border-white/5 hover:border-purple-500/30"
+                    className="shrink-0 w-52 group relative bg-white/5 rounded-2xl p-3 overflow-hidden border border-white/5 hover:border-purple-500/30 transition-all"
                   >
-                    <div className="relative aspect-square mb-3 overflow-hidden rounded-xl">
+                    {/* Full-card overlay */}
+                    <div className="absolute inset-0 z-10 bg-black/80 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity rounded-2xl flex flex-col justify-center gap-2.5 px-4 py-5">
+                      <button
+                        onClick={() => navigate(`/song/${song.song_id}`)}
+                        className="w-full flex items-center justify-center gap-2 py-3.5 bg-white text-black rounded-xl text-sm font-bold hover:bg-gray-100 transition-colors"
+                      >
+                        <ExternalLink className="w-5 h-5" />
+                        Xem chi tiết
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setModalSong(song); }}
+                        className="w-full flex items-center justify-center gap-2 py-3.5 bg-purple-600 hover:bg-purple-500 rounded-xl text-sm text-white font-semibold transition-colors"
+                      >
+                        <ListPlus className="w-5 h-5" />
+                        Thêm playlist
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); user && toggleLike(Number(song.song_id), user.id); }}
+                        className={`w-full flex items-center justify-center gap-2 py-3.5 rounded-xl text-sm font-semibold transition-colors ${
+                          likedSongs.has(Number(song.song_id))
+                            ? 'bg-red-500 hover:bg-red-400 text-white'
+                            : 'bg-white/15 hover:bg-white/25 text-white'
+                        }`}
+                      >
+                        <Heart className={`w-5 h-5 ${likedSongs.has(Number(song.song_id)) ? 'fill-white' : ''}`} />
+                        {likedSongs.has(Number(song.song_id)) ? 'Bỏ yêu thích' : 'Yêu thích'}
+                      </button>
+                    </div>
+
+                    {/* Card content */}
+                    <div className="aspect-square mb-3 overflow-hidden rounded-xl">
                       <img
                         src={cover}
                         alt={song.title}
                         onError={(e) => { (e.target as HTMLImageElement).src = FALLBACK_COVER; }}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
-                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                        <button
-                          onClick={() => playIndexed([toPlaybackSong(song)], 0)}
-                          className="p-2 bg-white rounded-full"
-                          title="Phát ngay"
-                        >
-                          <Play className="w-3 h-3 fill-black text-black" />
-                        </button>
-                        <button
-                          onClick={() => setModalSong(song)}
-                          className="p-2 bg-purple-600 rounded-full"
-                          title="Thêm vào playlist"
-                        >
-                          <ListPlus className="w-3 h-3 text-white" />
-                        </button>
-                      </div>
                     </div>
                     <p className="text-xs font-semibold truncate">{song.title}</p>
                     <p className="text-[11px] text-gray-400 truncate mt-0.5">{song.artist || 'Chưa xác định'}</p>
