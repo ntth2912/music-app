@@ -9,6 +9,22 @@ const uploadRoutes = require('./routes/uploadRoutes');
 dotenv.config();
 const app = express();
 
+// Thêm cột listened_seconds vào user_events nếu chưa có
+(async () => {
+  try {
+    const db = require('./config/db');
+    await db.query(`
+      ALTER TABLE user_events
+      ADD COLUMN listened_seconds INT UNSIGNED NOT NULL DEFAULT 0
+    `);
+    console.log('[DB] Đã thêm cột listened_seconds vào user_events');
+  } catch (err) {
+    if (err.code !== 'ER_DUP_FIELDNAME') {
+      console.warn('[DB] Migration listened_seconds:', err.message);
+    }
+  }
+})();
+
 app.use(cors());
 app.use(express.json());
 

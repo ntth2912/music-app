@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Heart, PlusCircle, Play, ArrowLeft, Music } from 'lucide-react';
+import { ArrowLeft, Music, Sparkles } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from '../../lib/toast';
 import MusicPlayer from '../../components/MusicPlayer';
@@ -8,16 +8,13 @@ import {
   AddToPlaylistModal,
   usePlaylistAddFlow,
   usePlaybackQueue,
-  toPlaybackSong,
 } from '../../components/PlaylistPlayback';
-import SongHashtagChips, { type SongHashtag } from '../../components/SongHashtagChips';
-import SongCoverImage from '../../components/SongCoverImage';
+import SongCard from '../../components/SongCard';
+import { type SongHashtag } from '../../components/SongHashtagChips';
 import type { SongCoverFields } from '../../lib/songCover';
 
 const API_BASE = 'http://localhost:5000/api/music';
 
-const FALLBACK_COVER =
-  'https://images.unsplash.com/photo-1493225255756-d9584f8606e9?w=300';
 const FALLBACK_AVATAR =
   'https://images.unsplash.com/photo-1511367461989-f85a21fda167?w=600';
 
@@ -72,6 +69,8 @@ export default function ArtistPage() {
   const [artist, setArtist] = useState<ArtistInfo | null>(null);
   const [songs, setSongs] = useState<Song[]>([]);
   const [loading, setLoading] = useState(true);
+  const [suggestions, setSuggestions] = useState<Song[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
 
   const { playlists, modalSong, openPlaylistModal, closePlaylistModal } = usePlaylistAddFlow(
     API_BASE,
@@ -79,7 +78,6 @@ export default function ArtistPage() {
   );
   const {
     currentSong,
-    playTrackInList,
     handleNext,
     handlePrevious,
   } = usePlaybackQueue();
@@ -117,6 +115,17 @@ export default function ArtistPage() {
       })
       .catch(() => toast.error('Không thể tải thông tin ca sĩ'))
       .finally(() => setLoading(false));
+
+    // Load "fan cũng hay nghe" suggestions
+    setLoadingSuggestions(true);
+    const userParam = user?.id ? `?userId=${encodeURIComponent(String(user.id))}` : '';
+    fetch(`${API_BASE}/artists/${id}/suggestions${userParam}`)
+      .then(async (res) => {
+        const data = await res.json();
+        if (Array.isArray(data)) setSuggestions(data);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingSuggestions(false));
   }, [id, user?.id]);
 
   // ── Favorite ───────────────────────────────────────────────────────────────
@@ -217,13 +226,13 @@ export default function ArtistPage() {
 
       {/* Biography */}
       {artist.biography && (
-        <div className="max-w-screen-2xl mx-auto px-6 py-6">
+        <div className="max-w-4xl mx-auto px-8 py-6">
           <p className="text-gray-400 text-sm leading-relaxed max-w-2xl">{artist.biography}</p>
         </div>
       )}
 
       {/* Songs */}
-      <div className="max-w-screen-2xl mx-auto px-6 py-4">
+      <div className="max-w-4xl mx-auto px-8 py-4">
         <h2 className="text-xl font-bold mb-6">Bài hát</h2>
 
         {songs.length === 0 ? (
@@ -232,74 +241,49 @@ export default function ArtistPage() {
             <p>Chưa có bài hát nào</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {songs.map((song) => (
-                <div
-                  key={song.song_id}
-                  onClick={() => navigate(`/song/${song.song_id}`)}
-                  className="group p-4 rounded-2xl cursor-pointer transition-colors bg-zinc-900 hover:bg-zinc-800"
-                >
-                  <div className="relative aspect-square mb-4 overflow-hidden rounded-xl">
-                    <SongCoverImage
-                      song={song}
-                      fallbackSrc={FALLBACK_COVER}
-                      alt={song.title}
-                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
-                    />
-                  </div>
-
-                  <h3 className="font-bold text-sm truncate">{song.title}</h3>
-                  <p className="text-xs text-gray-400 truncate">
-                    {song.artists && song.artists.length > 0
-                      ? song.artists.map((a, i) => (
-                          <React.Fragment key={a.artist_id}>
-                            {i > 0 && ', '}
-                            <span
-                              className="hover:text-white cursor-pointer"
-                              onClick={(e) => { e.stopPropagation(); navigate(`/artist/${a.artist_id}`); }}
-                            >
-                              {a.artist_name}
-                            </span>
-                          </React.Fragment>
-                        ))
-                      : (song.artist ?? 'Chưa xác định')}
-                  </p>
-                  <div className="mt-2 min-h-[1.25rem]">
-                    <SongHashtagChips hashtags={song.hashtags} maxVisible={2} dense />
-                  </div>
-
-                  <div className="flex gap-2 mt-2">
-                    <button
-                      type="button"
-                      title="Nghe trong hàng chờ"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const tracks = songs.map(toPlaybackSong);
-                        playTrackInList(tracks, song.song_id);
-                      }}
-                    >
-                      <Play className="w-5 h-5 text-gray-400 hover:text-white fill-current transition-colors" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); handleToggleFavorite(Number(song.song_id)); }}
-                      title="Yêu thích"
-                    >
-                      <Heart
-                        className={`w-5 h-5 transition-colors ${
-                          song.isFavorite ? 'text-red-500 fill-current' : 'text-gray-400 hover:text-white'
-                        }`}
-                      />
-                    </button>
-                    <button type="button" onClick={(e) => openPlaylistModal(e, song)} title="Thêm vào playlist">
-                      <PlusCircle className="w-5 h-5 text-gray-400 hover:text-white transition-colors" />
-                    </button>
-                  </div>
-                </div>
+              <SongCard
+                key={song.song_id}
+                song={song}
+                isFavorite={song.isFavorite}
+                onToggleFavorite={() => handleToggleFavorite(Number(song.song_id))}
+                onAddToPlaylist={(e) => openPlaylistModal(e, song)}
+              />
             ))}
           </div>
         )}
       </div>
+
+      {/* Suggestions: fan của ca sĩ này cũng hay nghe */}
+      {(loadingSuggestions || suggestions.length > 0) && (
+        <div className="max-w-4xl mx-auto px-8 pb-8">
+          <div className="flex items-center gap-3 mb-6">
+            <Sparkles className="w-6 h-6 text-amber-400 shrink-0" />
+            <div>
+              <h2 className="text-xl font-bold text-white">Fan cũng hay nghe</h2>
+              <p className="text-sm text-gray-500 mt-0.5">
+                Bài từ nghệ sĩ khác mà người nghe {artist.artist_name} thường yêu thích
+              </p>
+            </div>
+          </div>
+          {loadingSuggestions ? (
+            <p className="text-gray-500 text-sm">Đang tải...</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {suggestions.map((song) => (
+                <SongCard
+                  key={song.song_id}
+                  song={song}
+                  isFavorite={song.isFavorite}
+                  onToggleFavorite={() => handleToggleFavorite(Number(song.song_id))}
+                  onAddToPlaylist={(e) => openPlaylistModal(e, song)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <AddToPlaylistModal
         song={modalSong}

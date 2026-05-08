@@ -4,17 +4,19 @@ import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import {
   ChevronLeft, Play, Repeat, Repeat1, Loader2,
-  Music, GripVertical, Volume2, Trash2, ListMusic,
+  Music, GripVertical, Volume2, Trash2, ListMusic, Sparkles,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { usePlayback } from '../../context/PlaybackContext';
 import musicService from '../../services/musicService';
 import { toast } from '../../lib/toast';
-import { toPlaybackSong } from '../../components/MusicPlayer';
+import { toPlaybackSong, AddToPlaylistModal } from '../../components/MusicPlayer';
 import { getSongItemImageSrc } from '../../lib/songCover';
+import SongCard, { type SongCardSong } from '../../components/SongCard';
 
 const DRAG_TYPE = 'PD_SONG';
 const FALLBACK_COVER = 'https://images.unsplash.com/photo-1493225255756-d9584f8606e9?w=300';
+const API_BASE = 'http://localhost:5000/api/music';
 
 // ── Draggable row ─────────────────────────────────────────────────────────────
 
@@ -118,6 +120,9 @@ export default function PlaylistDetail() {
   const [playlist, setPlaylist] = useState<any | null>(null);
   const [songs, setSongs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [modalSong, setModalSong] = useState<any | null>(null);
 
   // Load playlist info + songs
   useEffect(() => {
@@ -135,6 +140,16 @@ export default function PlaylistDetail() {
       })
       .catch(() => toast.error('Không thể tải playlist'))
       .finally(() => setLoading(false));
+
+    // Suggestions: bài phù hợp thêm vào playlist này
+    if (!isNaN(playlistId)) {
+      setLoadingSuggestions(true);
+      const userParam = user?.id ? `?userId=${encodeURIComponent(String(user.id))}` : '';
+      fetch(`${API_BASE}/playlists/${playlistId}/suggestions${userParam}`)
+        .then(async (res) => { const data = await res.json(); if (Array.isArray(data)) setSuggestions(data); })
+        .catch(() => {})
+        .finally(() => setLoadingSuggestions(false));
+    }
   }, [id, user?.id]);
 
   const handlePlayAll = () => {
@@ -180,8 +195,8 @@ export default function PlaylistDetail() {
 
   return (
     <DndProvider backend={HTML5Backend}>
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-black text-white p-6">
-        <div className="max-w-3xl mx-auto">
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-black text-white">
+        <div className="max-w-4xl mx-auto px-8 py-6">
 
           {/* Header */}
           <div className="flex items-center gap-4 mb-8 flex-wrap">
@@ -261,8 +276,44 @@ export default function PlaylistDetail() {
               ))}
             </div>
           )}
+          {/* Suggestions: bài phù hợp để thêm vào playlist */}
+          {(loadingSuggestions || suggestions.length > 0) && (
+            <div className="mt-10">
+              <div className="flex items-center gap-3 mb-6">
+                <Sparkles className="w-6 h-6 text-amber-400 shrink-0" />
+                <div>
+                  <h2 className="text-xl font-bold">Gợi ý thêm vào playlist</h2>
+                  <p className="text-sm text-gray-400 mt-0.5">
+                    Bài có hashtag và ca sĩ tương tự với playlist này
+                  </p>
+                </div>
+              </div>
+              {loadingSuggestions ? (
+                <p className="text-gray-500 text-sm">Đang tải...</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {suggestions.map((song) => (
+                    <SongCard
+                      key={song.song_id}
+                      song={song as SongCardSong}
+                      onAddToPlaylist={(e) => { e.stopPropagation(); setModalSong(song); }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
+
+      {modalSong && (
+        <AddToPlaylistModal
+          song={{ song_id: modalSong.song_id, title: modalSong.title, artist: modalSong.artist }}
+          playlists={playlist ? [{ id: playlist.id, name: playlist.name }] : []}
+          apiBase={API_BASE}
+          onClose={() => setModalSong(null)}
+        />
+      )}
     </DndProvider>
   );
 }

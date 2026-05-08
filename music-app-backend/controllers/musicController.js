@@ -342,9 +342,17 @@ const musicController = {
         try {
             const [rows] = await db.query(`
                 SELECT s.*, ${ARTIST_NAME_SQL} AS artist, ${ARTIST_JSON_SQL} AS artists_json,
-                       ${HASHTAG_JSON_SQL} AS hashtags_json
+                       ${HASHTAG_JSON_SQL} AS hashtags_json,
+                       (
+                           COALESCE(s.play_count, 0) * ${SUGGESTION_SCORE_WEIGHT_PLAY}
+                           + COALESCE(s.like_count, 0) * ${SUGGESTION_SCORE_WEIGHT_LIKE}
+                           + (SELECT COUNT(*) FROM user_events ue
+                              WHERE ue.song_id = s.song_id
+                                AND ue.event_type = 'play'
+                                AND ue.event_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)) * 5
+                       ) AS trending_score
                 FROM songs s
-                ORDER BY s.like_count DESC LIMIT 10`);
+                ORDER BY trending_score DESC LIMIT 10`);
             res.status(200).json(parseSongRows(rows));
         } catch (error) {
             console.error('Lỗi getTrending:', error);
@@ -467,6 +475,32 @@ const musicController = {
 
     // ── Artists ────────────────────────────────────────────────────────────────
 
+    getAllArtists: async (req, res) => {
+        const { q } = req.query;
+        try {
+            const params = [];
+            let whereClause = '';
+            if (q && q.trim()) {
+                whereClause = 'WHERE a.artist_name LIKE ?';
+                params.push(`%${q.trim()}%`);
+            }
+            const [rows] = await db.query(
+                `SELECT a.artist_id, a.artist_name, a.avatar_url, a.biography,
+                        COUNT(DISTINCT sa.song_id) AS song_count
+                 FROM artists a
+                 LEFT JOIN song_artists sa ON sa.artist_id = a.artist_id
+                 ${whereClause}
+                 GROUP BY a.artist_id
+                 ORDER BY a.artist_name ASC`,
+                params
+            );
+            res.status(200).json(rows);
+        } catch (error) {
+            console.error('Lỗi getAllArtists:', error);
+            res.status(500).json({ message: 'Lỗi server khi lấy danh sách ca sĩ' });
+        }
+    },
+
     getArtistInfo: async (req, res) => {
         const { id } = req.params;
         try {
@@ -505,7 +539,17 @@ const musicController = {
     getUserPlaylists: async (req, res) => {
         const { userId } = req.params;
         try {
-            const [rows] = await db.query('SELECT * FROM playlists WHERE userId = ?', [userId]);
+            const [rows] = await db.query(
+                `SELECT 
+                    p.*,
+                    COUNT(ps.songId) AS song_count
+                 FROM playlists p
+                 LEFT JOIN playlist_songs ps ON ps.playlistId = p.id
+                 WHERE p.userId = ?
+                 GROUP BY p.id
+                 ORDER BY p.id DESC`,
+                [userId],
+            );
             res.status(200).json(rows || []);
         } catch (error) {
             console.error('Lỗi getUserPlaylists:', error);
@@ -639,9 +683,263 @@ const musicController = {
         }
     },
 
+    // Gợi ý trang Detail Song: "Người nghe bài này cũng nghe" — dựa trên user_events overlap
+    getSongDetailSuggestions: async (req, res) => {
+        const songId = Number(req.params.songId);
+        const userId = Number(req.query.userId) || null;
+        if (!Number.isFinite(songId) || songId <= 0) {
+            return res.status(400).json({ message: 'songId không hợp lệ' });
+        }
+        try {
+            // Tìm users khác cũng nghe bài này, rồi lấy bài họ hay nghe nhất (loại bài hiện tại + bài đã thích)
+            const [rows] = await db.query(
+                `SELECT s.*, ${ARTIST_NAME_SQL} AS artist, ${ARTIST_JSON_SQL} AS artists_json,
+                        ${HASHTAG_JSON_SQL} AS hashtags_json,
+                        COUNT(ue2.event_id) AS co_listen_count
+                 FROM user_events ue1
+                 INNER JOIN user_events ue2 ON ue2.user_id = ue1.user_id
+                     AND ue2.song_id != ? AND ue2.event_type = 'play'
+                 INNER JOIN songs s ON s.song_id = ue2.song_id
+                 WHERE ue1.song_id = ?
+                   AND ue1.event_type = 'play'
+                   AND (${userId ? 'ue1.user_id != ?' : '1=1'})
+                   ${userId ? `AND NOT EXISTS (SELECT 1 FROM favorites fv WHERE fv.userId = ? AND fv.songId = s.song_id)` : ''}
+                   AND s.song_id != ?
+                 GROUP BY s.song_id
+                 ORDER BY co_listen_count DESC, ${SONG_POPULARITY_SCORE_SQL} DESC
+                 LIMIT 8`,
+                userId
+                    ? [songId, songId, userId, userId, songId]
+                    : [songId, songId, songId]
+            );
+            res.status(200).json(parseSongRows(rows));
+        } catch (error) {
+            console.error('Lỗi getSongDetailSuggestions:', error);
+            res.status(500).json({ message: 'Lỗi server khi lấy gợi ý detail' });
+        }
+    },
+
+    // Gợi ý trang Artist: bài của các nghệ sĩ khác mà fan của artist này cũng hay nghe
+    getArtistPageSuggestions: async (req, res) => {
+        const artistId = Number(req.params.artistId);
+        const userId = Number(req.query.userId) || null;
+        if (!Number.isFinite(artistId) || artistId <= 0) {
+            return res.status(400).json({ message: 'artistId không hợp lệ' });
+        }
+        try {
+            // Fans của artist này (users đã nghe ít nhất 3 bài) → bài họ nghe nhiều từ artist khác
+            const [rows] = await db.query(
+                `SELECT s.*, ${ARTIST_NAME_SQL} AS artist, ${ARTIST_JSON_SQL} AS artists_json,
+                        ${HASHTAG_JSON_SQL} AS hashtags_json,
+                        COUNT(ue.event_id) AS fan_play_count
+                 FROM user_events ue
+                 INNER JOIN songs s ON s.song_id = ue.song_id
+                 WHERE ue.user_id IN (
+                     SELECT DISTINCT ue2.user_id
+                     FROM user_events ue2
+                     INNER JOIN song_artists sa2 ON sa2.song_id = ue2.song_id
+                     WHERE sa2.artist_id = ? AND ue2.event_type = 'play'
+                     GROUP BY ue2.user_id HAVING COUNT(*) >= 2
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM song_artists sa3 WHERE sa3.song_id = s.song_id AND sa3.artist_id = ?
+                 )
+                 ${userId ? `AND NOT EXISTS (SELECT 1 FROM favorites fv WHERE fv.userId = ? AND fv.songId = s.song_id)` : ''}
+                 AND ue.event_type = 'play'
+                 GROUP BY s.song_id
+                 ORDER BY fan_play_count DESC, ${SONG_POPULARITY_SCORE_SQL} DESC
+                 LIMIT 8`,
+                userId ? [artistId, artistId, userId] : [artistId, artistId]
+            );
+            res.status(200).json(parseSongRows(rows));
+        } catch (error) {
+            console.error('Lỗi getArtistPageSuggestions:', error);
+            res.status(500).json({ message: 'Lỗi server khi lấy gợi ý artist page' });
+        }
+    },
+
+    // Gợi ý trang Playlist: bài phù hợp để thêm vào playlist dựa trên hashtag/artist đã có trong playlist
+    getPlaylistSuggestions: async (req, res) => {
+        const playlistId = Number(req.params.playlistId);
+        const userId = Number(req.query.userId) || null;
+        if (!Number.isFinite(playlistId) || playlistId <= 0) {
+            return res.status(400).json({ message: 'playlistId không hợp lệ' });
+        }
+        try {
+            const [rows] = await db.query(
+                `SELECT s.*, ${ARTIST_NAME_SQL} AS artist, ${ARTIST_JSON_SQL} AS artists_json,
+                        ${HASHTAG_JSON_SQL} AS hashtags_json,
+                        (
+                            /* hashtag overlap với playlist */
+                            (SELECT COUNT(*) FROM song_hashtag sh_c
+                             INNER JOIN song_hashtag sh_p ON sh_p.hashtagId = sh_c.hashtagId
+                             INNER JOIN playlist_songs ps ON ps.songId = sh_p.songId
+                             WHERE sh_c.songId = s.song_id AND ps.playlistId = ?) * 10
+                            /* artist overlap */
+                            + (SELECT COUNT(*) FROM song_artists sa_c
+                               INNER JOIN song_artists sa_p ON sa_p.artist_id = sa_c.artist_id
+                               INNER JOIN playlist_songs ps2 ON ps2.songId = sa_p.song_id
+                               WHERE sa_c.song_id = s.song_id AND ps2.playlistId = ?) * 20
+                            + ${SONG_POPULARITY_SCORE_SQL}
+                        ) AS fit_score
+                 FROM songs s
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM playlist_songs ps3 WHERE ps3.playlistId = ? AND ps3.songId = s.song_id
+                 )
+                 ${userId ? `AND NOT EXISTS (SELECT 1 FROM favorites fv WHERE fv.userId = ? AND fv.songId = s.song_id)` : ''}
+                 ORDER BY fit_score DESC
+                 LIMIT 8`,
+                userId ? [playlistId, playlistId, playlistId, userId] : [playlistId, playlistId, playlistId]
+            );
+            res.status(200).json(parseSongRows(rows));
+        } catch (error) {
+            console.error('Lỗi getPlaylistSuggestions:', error);
+            res.status(500).json({ message: 'Lỗi server khi lấy gợi ý playlist' });
+        }
+    },
+
+    // Gợi ý cho Queue Panel — kết hợp 4 nguồn, luôn trả về ~20 bài
+    getQueueSuggestions: async (req, res) => {
+        const songId = Number(req.params.songId);
+        const userId = Number(req.query.userId) || null;
+        const excludeRaw = String(req.query.exclude || '');
+        const extraExclude = excludeRaw
+            .split(',')
+            .map(Number)
+            .filter((n) => Number.isFinite(n) && n > 0);
+
+        if (!Number.isFinite(songId) || songId <= 0) {
+            return res.status(400).json({ message: 'songId không hợp lệ' });
+        }
+
+        // Always include current song so it's never recommended
+        const baseExclude = [songId, ...extraExclude];
+
+        const baseSelect = `
+            SELECT s.*, ${ARTIST_NAME_SQL} AS artist, ${ARTIST_JSON_SQL} AS artists_json,
+                   ${HASHTAG_JSON_SQL} AS hashtags_json`;
+
+        try {
+            // 5 nguồn chạy song song, mỗi nguồn có quota riêng
+            const [
+                [collabRows],
+                [hashtagRows],
+                [artistRows],
+                [likedRows],
+                [playedRows],
+            ] = await Promise.all([
+                // 1. Co-listen — 6 bài
+                db.query(
+                    `${baseSelect}, COUNT(ue2.event_id) AS _score
+                     FROM user_events ue1
+                     INNER JOIN user_events ue2 ON ue2.user_id = ue1.user_id
+                         AND ue2.song_id != ? AND ue2.event_type = 'play'
+                     INNER JOIN songs s ON s.song_id = ue2.song_id
+                     WHERE ue1.song_id = ? AND ue1.event_type = 'play'
+                       AND s.status != 'inactive' AND s.song_id NOT IN (?)
+                     GROUP BY s.song_id
+                     ORDER BY _score DESC, ${SONG_POPULARITY_SCORE_SQL} DESC
+                     LIMIT 6`,
+                    [songId, songId, baseExclude],
+                ),
+                // 2. Hashtag overlap — 6 bài
+                db.query(
+                    `${baseSelect}, COUNT(sh2.hashtagId) AS _score
+                     FROM song_hashtag sh1
+                     INNER JOIN song_hashtag sh2 ON sh2.hashtagId = sh1.hashtagId AND sh2.songId != ?
+                     INNER JOIN songs s ON s.song_id = sh2.songId
+                     WHERE sh1.songId = ?
+                       AND s.status != 'inactive' AND s.song_id NOT IN (?)
+                     GROUP BY s.song_id
+                     ORDER BY _score DESC, ${SONG_POPULARITY_SCORE_SQL} DESC
+                     LIMIT 6`,
+                    [songId, songId, baseExclude],
+                ),
+                // 3. Cùng ca sĩ — 4 bài
+                db.query(
+                    `${baseSelect}
+                     FROM songs s
+                     INNER JOIN song_artists sa ON sa.song_id = s.song_id
+                     WHERE sa.artist_id IN (
+                         SELECT artist_id FROM song_artists WHERE song_id = ?
+                     )
+                     AND s.status != 'inactive' AND s.song_id NOT IN (?)
+                     ORDER BY ${SONG_POPULARITY_SCORE_SQL} DESC
+                     LIMIT 4`,
+                    [songId, baseExclude],
+                ),
+                // 4. Top yêu thích — 8 bài (luôn chạy)
+                db.query(
+                    `${baseSelect}
+                     FROM songs s
+                     WHERE s.status != 'inactive' AND s.song_id NOT IN (?)
+                     ORDER BY COALESCE(s.like_count, 0) DESC, COALESCE(s.play_count, 0) DESC
+                     LIMIT 8`,
+                    [baseExclude],
+                ),
+                // 5. Top nghe nhiều — 8 bài (luôn chạy)
+                db.query(
+                    `${baseSelect}
+                     FROM songs s
+                     WHERE s.status != 'inactive' AND s.song_id NOT IN (?)
+                     ORDER BY COALESCE(s.play_count, 0) DESC, COALESCE(s.like_count, 0) DESC
+                     LIMIT 8`,
+                    [baseExclude],
+                ),
+            ]);
+
+            // Merge theo thứ tự ưu tiên: collab > hashtag > artist > liked > played
+            const seen = new Set(baseExclude);
+            const combined = [];
+            for (const row of [...collabRows, ...hashtagRows, ...artistRows, ...likedRows, ...playedRows]) {
+                if (combined.length >= 20) break;
+                const id = Number(row.song_id);
+                if (!seen.has(id)) { seen.add(id); combined.push(row); }
+            }
+
+            res.status(200).json(parseSongRows(combined));
+        } catch (error) {
+            console.error('Lỗi getQueueSuggestions:', error);
+            res.status(500).json({ message: 'Lỗi server khi lấy gợi ý queue' });
+        }
+    },
+
     getHome: async (req, res) => { res.status(200).json({ message: 'Home logic' }); },
     getDistributions: async (req, res) => { res.status(200).json({ message: 'Distributions' }); },
     submitDistribution: async (req, res) => { res.status(201).json({ message: 'Submitted' }); },
+
+    // Ghi nhận lượt nghe — frontend gọi sau khi user nghe đủ ngưỡng (30s hoặc 50% bài)
+    recordPlay: async (req, res) => {
+        const songId = Number(req.params.songId);
+        const userId = Number(req.body.userId) || null;
+        const listenedSeconds = Number(req.body.listenedSeconds) || 0;
+        // source_type: trang user đang nghe ('home','trending','favorites','artist','playlist','detail')
+        const sourceType = typeof req.body.sourceType === 'string' ? req.body.sourceType.slice(0, 50) : null;
+
+        if (!Number.isFinite(songId) || songId <= 0) {
+            return res.status(400).json({ message: 'songId không hợp lệ' });
+        }
+
+        try {
+            // 1. Ghi sự kiện nghe vào user_events (dùng cho trending cron + gợi ý cá nhân)
+            await db.query(
+                `INSERT INTO user_events (user_id, song_id, event_type, listened_seconds, source_type)
+                 VALUES (?, ?, 'play', ?, ?)`,
+                [userId, songId, listenedSeconds, sourceType]
+            );
+
+            // 2. Tăng play_count trực tiếp trên songs (dùng để hiển thị nhanh, k cần đợi cron)
+            await db.query(
+                'UPDATE songs SET play_count = play_count + 1 WHERE song_id = ?',
+                [songId]
+            );
+
+            res.json({ success: true });
+        } catch (error) {
+            console.error('Lỗi recordPlay:', error);
+            res.status(500).json({ message: 'Lỗi server khi ghi lượt nghe' });
+        }
+    },
 };
 
 module.exports = musicController;

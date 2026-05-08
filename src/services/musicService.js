@@ -52,8 +52,23 @@ const musicService = {
     return data;
   },
 
-  getHomeSuggestions: async (userId) => {
-    const { data } = await axios.get(`${API}/home/suggestions`, { params: { userId } });
+  getHomeSuggestions: async (userId, extra = {}) => {
+    const { data } = await axios.get(`${API}/home/suggestions`, { params: { userId, ...extra } });
+    return data;
+  },
+
+  // Queue Panel: combined collab + hashtag + artist + popular (~20 songs)
+  getQueueSuggestions: async (songId, userId, excludeIds = []) => {
+    const exclude = excludeIds.join(',');
+    const { data } = await axios.get(`${API}/songs/${songId}/queue-suggestions`, {
+      params: { userId, exclude },
+    });
+    return data;
+  },
+
+  // Ghi nhận lượt nghe — listenedSeconds dùng để tính trending theo thời gian thực nghe
+  recordPlay: async (songId, userId, listenedSeconds, sourceType) => {
+    const { data } = await axios.post(`${API}/songs/${songId}/play`, { userId, listenedSeconds, sourceType });
     return data;
   },
 };

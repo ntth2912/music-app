@@ -1,13 +1,13 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Music, Trash2, Edit2, Loader2, Play, Sparkles, ListPlus, Heart, ExternalLink } from 'lucide-react';
+import { Plus, Music, Trash2, Edit2, Loader2, Play, Sparkles, ListPlus, Heart } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { usePlayback } from '../../context/PlaybackContext';
 import musicService from '../../services/musicService';
 import { toast } from '../../lib/toast';
 import { toPlaybackSong, AddToPlaylistModal } from '../../components/MusicPlayer';
+import SongCard, { type SongCardSong } from '../../components/SongCard';
 import { usePlaylist } from '../../context/PlaylistContext';
-import { getSongItemImageSrc } from '../../lib/songCover';
 
 const FALLBACK_COVER = 'https://images.unsplash.com/photo-1493225255756-d9584f8606e9?w=300';
 const API_BASE = 'http://localhost:5000/api/music';
@@ -21,6 +21,7 @@ export default function ListenerPlaylists() {
   // Local editable copy of playlists (CRUD operations)
   const [playlists, setPlaylists] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  console.log('playlists: ', playlists);
   const [isCreating, setIsCreating] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -121,8 +122,8 @@ export default function ListenerPlaylists() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-black text-white p-6">
-      <div className="max-w-screen-2xl mx-auto">
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-black text-white pb-28">
+      <div className="max-w-4xl mx-auto px-8 py-6">
 
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
@@ -144,7 +145,7 @@ export default function ListenerPlaylists() {
         {/* Create form */}
         {isCreating && (
           <div className="mb-8 p-6 bg-white/10 rounded-2xl border border-white/20 backdrop-blur-xl">
-            <h3 className="text-xl font-semibold mb-4 text-purple-300">Đặt tên cho cảm xúc của Hiền</h3>
+            <h3 className="text-xl font-semibold mb-4 text-purple-300">Đặt tên cho playlist</h3>
             <div className="flex gap-3">
               <input
                 type="text"
@@ -166,7 +167,7 @@ export default function ListenerPlaylists() {
         )}
 
         {/* Playlist grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {playlists.length === 0 ? (
             <div className="col-span-full text-center py-32 bg-white/5 rounded-3xl border-2 border-dashed border-white/10">
               <Music className="w-20 h-20 mx-auto mb-4 text-gray-600" />
@@ -217,7 +218,16 @@ export default function ListenerPlaylists() {
                       <h3 className="text-lg font-bold truncate group-hover:text-purple-400 transition-colors">{playlist.name}</h3>
                       <p className="text-xs text-gray-400 mt-1 flex items-center gap-1.5">
                         <Music className="w-3 h-3" />
-                        {playlist.songs?.length ?? 0} bài hát
+                        {(
+                          playlist.songCount ??
+                          playlist.song_count ??
+                          playlist.totalSongs ??
+                          playlist.total_songs ??
+                          playlist.tracksCount ??
+                          playlist.tracks_count ??
+                          (Array.isArray(playlist.songs) ? playlist.songs.length : undefined) ??
+                          0
+                        )} bài hát
                       </p>
                     </div>
                     <div className="flex gap-1 ml-2" onClick={(e) => e.stopPropagation()}>
@@ -252,57 +262,18 @@ export default function ListenerPlaylists() {
           ) : suggestions.length === 0 ? (
             <p className="text-gray-500 italic">Hãy thêm yêu thích để nhận gợi ý!</p>
           ) : (
-            <div className="flex gap-4 overflow-x-auto pb-4 -mx-1 px-1">
-              {suggestions.map((song) => {
-                const cover = getSongItemImageSrc(song, FALLBACK_COVER);
-                return (
-                  <div
-                    key={song.song_id}
-                    className="shrink-0 w-52 group relative bg-white/5 rounded-2xl p-3 overflow-hidden border border-white/5 hover:border-purple-500/30 transition-all"
-                  >
-                    {/* Full-card overlay */}
-                    <div className="absolute inset-0 z-10 bg-black/80 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity rounded-2xl flex flex-col justify-center gap-2.5 px-4 py-5">
-                      <button
-                        onClick={() => navigate(`/song/${song.song_id}`)}
-                        className="w-full flex items-center justify-center gap-2 py-3.5 bg-white text-black rounded-xl text-sm font-bold hover:bg-gray-100 transition-colors"
-                      >
-                        <ExternalLink className="w-5 h-5" />
-                        Xem chi tiết
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setModalSong(song); }}
-                        className="w-full flex items-center justify-center gap-2 py-3.5 bg-purple-600 hover:bg-purple-500 rounded-xl text-sm text-white font-semibold transition-colors"
-                      >
-                        <ListPlus className="w-5 h-5" />
-                        Thêm playlist
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); user && toggleLike(Number(song.song_id), user.id); }}
-                        className={`w-full flex items-center justify-center gap-2 py-3.5 rounded-xl text-sm font-semibold transition-colors ${
-                          likedSongs.has(Number(song.song_id))
-                            ? 'bg-red-500 hover:bg-red-400 text-white'
-                            : 'bg-white/15 hover:bg-white/25 text-white'
-                        }`}
-                      >
-                        <Heart className={`w-5 h-5 ${likedSongs.has(Number(song.song_id)) ? 'fill-white' : ''}`} />
-                        {likedSongs.has(Number(song.song_id)) ? 'Bỏ yêu thích' : 'Yêu thích'}
-                      </button>
-                    </div>
-
-                    {/* Card content */}
-                    <div className="aspect-square mb-3 overflow-hidden rounded-xl">
-                      <img
-                        src={cover}
-                        alt={song.title}
-                        onError={(e) => { (e.target as HTMLImageElement).src = FALLBACK_COVER; }}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
-                    </div>
-                    <p className="text-xs font-semibold truncate">{song.title}</p>
-                    <p className="text-[11px] text-gray-400 truncate mt-0.5">{song.artist || 'Chưa xác định'}</p>
-                  </div>
-                );
-              })}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {suggestions.map((song) => (
+                <SongCard
+                  key={song.song_id}
+                  song={song as SongCardSong}
+                  contextSongs={suggestions as SongCardSong[]}
+                  isFavorite={likedSongs.has(Number(song.song_id))}
+                  onToggleFavorite={() => { user && toggleLike(Number(song.song_id), user.id); }}
+                  onAddToPlaylist={(e) => { e.stopPropagation(); setModalSong(song); }}
+                  showPlayCount
+                />
+              ))}
             </div>
           )}
         </div>

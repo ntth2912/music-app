@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Heart, PlusCircle, Play } from 'lucide-react';
+import { ArrowLeft, Heart, PlusCircle, Play, ListPlus } from 'lucide-react';
+import SongCard from '../../components/SongCard';
 import { useAuth } from '../../context/AuthContext';
+import { usePlayback } from '../../context/PlaybackContext';
 import { toast } from '../../lib/toast';
-import MusicPlayer from '../../components/MusicPlayer';
 import {
   AddToPlaylistModal,
   usePlaylistAddFlow,
-  usePlaybackQueue,
   toPlaybackSong,
 } from '../../components/PlaylistPlayback';
 import SongHashtagChips, { type SongHashtag } from '../../components/SongHashtagChips';
@@ -61,6 +61,7 @@ export default function DetailSong() {
   const { songId: songIdParam } = useParams<{ songId: string }>();
   const songIdNum = Number(songIdParam);
   const { user } = useAuth();
+  const { addToQueue, playIndexed } = usePlayback();
 
   const [song, setSong] = useState<Song | null>(null);
   const [suggestions, setSuggestions] = useState<Song[]>([]);
@@ -71,12 +72,6 @@ export default function DetailSong() {
     API_BASE,
     user?.id ?? null,
   );
-  const {
-    currentSong: playerCurrentSong,
-    playIndexed,
-    handleNext,
-    handlePrevious,
-  } = usePlaybackQueue();
 
   useEffect(() => {
     if (!Number.isFinite(songIdNum) || songIdNum <= 0) {
@@ -113,28 +108,13 @@ export default function DetailSong() {
 
         setLoadingSuggestions(true);
         try {
-          const hashtagIds =
-            Array.isArray(detail.hashtags) && detail.hashtags.length > 0
-              ? detail.hashtags
-                  .map((h) => Number(h.hashtag_id))
-                  .filter((n) => !Number.isNaN(n))
-              : [];
-
-          if (hashtagIds.length === 0) {
-            if (!cancelled) setSuggestions([]);
-            return;
-          }
-
-          const q = hashtagIds.join(',');
+          const userParam = user?.id ? `?userId=${encodeURIComponent(String(user.id))}` : '';
           const sugRes = await fetch(
-            `${API_BASE}/songs/by-hashtag?q=${encodeURIComponent(q)}`,
+            `${API_BASE}/songs/${songIdNum}/suggestions${userParam}`,
           );
           if (!sugRes.ok) throw new Error();
           const rawList: Song[] = (await sugRes.json()) || [];
-          const filtered = rawList
-            .filter((s) => s.song_id !== songIdNum)
-            .slice(0, 8);
-          if (!cancelled) setSuggestions(mergeFavoriteFlags(filtered, favSet));
+          if (!cancelled) setSuggestions(mergeFavoriteFlags(rawList, favSet));
         } catch {
           if (!cancelled) {
             toast.error('Không tải được gợi ý', {
@@ -218,13 +198,6 @@ export default function DetailSong() {
     [user?.id],
   );
 
-  const isPlayerLiked = (() => {
-    if (!playerCurrentSong || !song) return false;
-    const id = Number(playerCurrentSong.song_id);
-    if (song.song_id === id) return song.isFavorite ?? false;
-    return suggestions.find((s) => s.song_id === id)?.isFavorite ?? false;
-  })();
-
   if (loadingSong) {
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center">
@@ -250,7 +223,7 @@ export default function DetailSong() {
 
   return (
     <div className="min-h-screen bg-black text-white pb-36">
-      <div className="max-w-screen-2xl mx-auto p-6">
+      <div className="max-w-4xl mx-auto px-8 py-6">
         <button
           type="button"
           onClick={() => navigate(-1)}
@@ -309,6 +282,15 @@ export default function DetailSong() {
               </button>
               <button
                 type="button"
+                onClick={() => addToQueue(toPlaybackSong(song))}
+                title="Thêm vào danh sách chờ"
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-gray-100"
+              >
+                <ListPlus className="w-5 h-5 text-purple-400" />
+                Thêm vào danh sách chờ
+              </button>
+              <button
+                type="button"
                 onClick={() => handleToggleFavorite(song.song_id)}
                 title="Yêu thích"
                 className="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10"
@@ -332,73 +314,23 @@ export default function DetailSong() {
         </div>
 
         <section>
-          <h2 className="text-xl font-bold mb-4">Gợi ý theo hashtag</h2>
+          <h2 className="text-xl font-bold mb-4">Người nghe bài này cũng nghe</h2>
           {loadingSuggestions ? (
             <p className="text-gray-500 text-sm">Đang tải gợi ý...</p>
           ) : suggestions.length === 0 ? (
             <p className="text-gray-500 text-sm">
-              Không có bài gợi ý (bài này chưa gắn hashtag hoặc chưa có bài cùng tag).
+              Chưa có dữ liệu nghe chung. Bài càng nhiều lượt nghe thì gợi ý càng chính xác hơn.
             </p>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               {suggestions.map((s) => (
-                  <div
-                    key={s.song_id}
-                    onClick={() => navigate(`/song/${s.song_id}`)}
-                    className="group p-4 rounded-2xl cursor-pointer transition-colors bg-zinc-900 hover:bg-zinc-800"
-                  >
-                    <div className="relative aspect-square mb-4 overflow-hidden rounded-xl">
-                      <SongCoverImage
-                        song={s}
-                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
-                      />
-                    </div>
-                    <h3 className="font-bold text-sm truncate">{s.title}</h3>
-                    <p className="text-xs text-gray-400 truncate">
-                      {s.artists && s.artists.length > 0
-                        ? s.artists.map((a) => a.artist_name).join(', ')
-                        : (s.artist ?? '')}
-                    </p>
-                    <div className="mt-2 min-h-[1.25rem]">
-                      <SongHashtagChips hashtags={s.hashtags} maxVisible={2} dense />
-                    </div>
-                    <div className="flex gap-2 mt-2">
-                      <button
-                        type="button"
-                        disabled={!s.file_url}
-                        title="Nghe trong hàng chờ"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          playMainQueueFromIndex(s.song_id);
-                        }}
-                      >
-                        <Play className="w-5 h-5 text-gray-400 hover:text-white fill-current transition-colors" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleFavorite(s.song_id);
-                        }}
-                        title="Yêu thích"
-                      >
-                        <Heart
-                          className={`w-5 h-5 transition-colors ${
-                            s.isFavorite
-                              ? 'text-red-500 fill-current'
-                              : 'text-gray-400 hover:text-white'
-                          }`}
-                        />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => openPlaylistModal(e, s)}
-                        title="Thêm vào playlist"
-                      >
-                        <PlusCircle className="w-5 h-5 text-gray-400 hover:text-white transition-colors" />
-                      </button>
-                    </div>
-                  </div>
+                <SongCard
+                  key={s.song_id}
+                  song={s}
+                  isFavorite={s.isFavorite}
+                  onToggleFavorite={() => handleToggleFavorite(s.song_id)}
+                  onAddToPlaylist={(e) => openPlaylistModal(e, s)}
+                />
               ))}
             </div>
           )}
@@ -412,13 +344,6 @@ export default function DetailSong() {
         onClose={closePlaylistModal}
       />
 
-      <MusicPlayer
-        currentSong={playerCurrentSong}
-        onNext={handleNext}
-        onPrevious={handlePrevious}
-        onToggleLike={handleToggleFavorite}
-        isLiked={isPlayerLiked}
-      />
     </div>
   );
 }

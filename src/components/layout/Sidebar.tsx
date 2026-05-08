@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Home, Music, LogOut, Compass, Heart, ListMusic, Sparkles, Upload } from 'lucide-react';
+import { Home, Music, LogOut, Compass, Heart, ListMusic, Sparkles, Upload, Users } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { usePlaylist } from '../../context/PlaylistContext';
 import { useBehavior } from '../../context/BehaviorContext';
@@ -15,14 +15,16 @@ export default function Sidebar() {
   const menuItems = [
     { path: '/listener-home', icon: Home,      label: 'Trang Chủ' },
     { path: '/trending',      icon: Compass,   label: 'Khám Phá' },
+    { path: '/artists',       icon: Users,     label: 'Ca Sĩ' },
     { path: '/favorites',     icon: Heart,     label: 'Yêu Thích' },
     { path: '/playlists',     icon: Music,     label: 'Playlist' },
   ];
 
-  const isActive = (path: string) =>
-    path === '/playlists'
-      ? location.pathname.startsWith('/playlists')
-      : location.pathname === path;
+  const isActive = (path: string) => {
+    if (path === '/playlists') return location.pathname.startsWith('/playlists');
+    if (path === '/artists') return location.pathname === '/artists';
+    return location.pathname === path;
+  };
 
   return (
     <div className="w-64 bg-zinc-950 h-screen flex flex-col border-r border-white/10 shrink-0">

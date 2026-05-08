@@ -101,7 +101,7 @@ export function AddToPlaylistModal({
       >
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-bold text-base">Thêm vào playlist</h3>
-          <button type="button" onClick={onClose} className="text-gray-400 hover:text-white">
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-white cursor-pointer">
             <X size={18} />
           </button>
         </div>
@@ -120,7 +120,7 @@ export function AddToPlaylistModal({
                 key={pl.id}
                 type="button"
                 onClick={() => pickPlaylist(pl.id)}
-                className="w-full text-left px-4 py-3 rounded-xl hover:bg-zinc-800 transition-colors text-sm"
+                className="w-full text-left px-4 py-3 rounded-xl hover:bg-zinc-800 transition-colors text-sm cursor-pointer"
               >
                 {pl.name}
               </button>
@@ -186,9 +186,12 @@ export function usePlaybackQueue() {
 
   const playIndexed = useCallback((newQueue: PlayerSong[], i: number) => {
     if (newQueue.length === 0) return;
-    const safeIdx = Math.max(0, Math.min(i, newQueue.length - 1));
     setQueue(newQueue);
-    setIndex(safeIdx);
+    setIndex(i);
+  }, []);
+
+  const addToQueue = useCallback((song: PlayerSong) => {
+    setQueue((prev) => [...prev, song]);
   }, []);
 
   const playTrackInList = useCallback(
@@ -210,14 +213,21 @@ export function usePlaybackQueue() {
     setIndex((prev) => (prev - 1 + queue.length) % queue.length);
   }, [queue.length]);
 
+  const stopPlayback = useCallback(() => {
+    setQueue([]);
+    setIndex(-1);
+  }, []);
+
   return {
     queue,
     index,
     currentSong,
     playIndexed,
+    addToQueue,
     playTrackInList,
     handleNext,
     handlePrevious,
+    stopPlayback,
   };
 }
 
@@ -228,8 +238,6 @@ function formatTime(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// ── Thanh nghe nhạc: play / pause / next / prev (logic audio nằm gọn tại đây) ─
-
 interface MusicPlayerProps {
   currentSong: PlayerSong | null;
   playKey?: number;
@@ -239,6 +247,10 @@ interface MusicPlayerProps {
   isLiked: boolean;
   onToggleQueue?: () => void;
   isQueueOpen?: boolean;
+  disableSkip?: boolean;
+  onClose?: () => void;
+  /** Called once per play when threshold (30s hoặc 50% duration) đạt được */
+  onCountPlay?: (songId: number, listenedSeconds: number) => void;
 }
 
 export default function MusicPlayer({
@@ -250,18 +262,22 @@ export default function MusicPlayer({
   isLiked,
   onToggleQueue,
   isQueueOpen = false,
+  disableSkip = false,
+  onClose,
+  onCountPlay,
 }: MusicPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const onNextRef = useRef(onNext);
+  const onCountPlayRef = useRef(onCountPlay);
+  const playCountedRef = useRef(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
 
-  useEffect(() => {
-    onNextRef.current = onNext;
-  }, [onNext]);
+  useEffect(() => { onNextRef.current = onNext; }, [onNext]);
+  useEffect(() => { onCountPlayRef.current = onCountPlay; }, [onCountPlay]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -270,8 +286,19 @@ export default function MusicPlayer({
     setCurrentTime(0);
     setDuration(0);
     setIsPlaying(false);
+    playCountedRef.current = false;
 
-    const onTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const onTimeUpdate = () => {
+      setCurrentTime(audio.currentTime);
+      // Đếm lượt nghe: ngưỡng 30 giây HOẶC 50% thời lượng (whichever comes first)
+      if (!playCountedRef.current && audio.duration > 0) {
+        const threshold = Math.min(30, audio.duration * 0.5);
+        if (audio.currentTime >= threshold) {
+          playCountedRef.current = true;
+          onCountPlayRef.current?.(Number(currentSong?.song_id), Math.floor(audio.currentTime));
+        }
+      }
+    };
     const onDurationReady = () => {
       if (isFinite(audio.duration)) setDuration(audio.duration);
     };
@@ -368,7 +395,7 @@ export default function MusicPlayer({
   return (
     <>
       <audio ref={audioRef} preload="metadata" />
-      <div className="fixed bottom-0 left-0 right-0 bg-black/95 border-t border-white/10 p-4 z-50">
+      <div className="fixed bottom-0 left-64 right-0 bg-black/95 border-t border-white/10 p-4 z-50">
         <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 w-1/3 min-w-0">
             <img
@@ -386,7 +413,7 @@ export default function MusicPlayer({
             <button
               type="button"
               onClick={() => onToggleLike(Number(currentSong.song_id))}
-              className={`ml-2 shrink-0 p-2 hover:scale-110 transition-transform ${
+              className={`ml-2 shrink-0 p-2 hover:scale-110 transition-transform cursor-pointer ${
                 isLiked ? 'text-red-500' : 'text-gray-400 hover:text-white'
               }`}
             >
@@ -396,17 +423,37 @@ export default function MusicPlayer({
 
           <div className="flex flex-col items-center w-1/3 gap-2">
             <div className="flex items-center gap-6">
-              <button type="button" onClick={onPrevious} className="text-gray-400 hover:text-white transition-colors">
+              <button
+                type="button"
+                disabled={disableSkip}
+                onClick={() => { if (!disableSkip) onPrevious(); }}
+                className={`transition-colors ${
+                  disableSkip
+                    ? 'text-gray-700 cursor-not-allowed'
+                    : 'text-gray-400 hover:text-white cursor-pointer'
+                }`}
+                title={disableSkip ? 'Đang lặp 1 bài' : 'Bài trước'}
+              >
                 <SkipBack size={22} />
               </button>
               <button
                 type="button"
                 onClick={togglePlay}
-                className="w-10 h-10 bg-white text-black rounded-full flex items-center justify-center hover:scale-105 transition-transform"
+                className="w-10 h-10 bg-white text-black rounded-full flex items-center justify-center hover:scale-105 transition-transform cursor-pointer"
               >
                 {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
               </button>
-              <button type="button" onClick={onNext} className="text-gray-400 hover:text-white transition-colors">
+              <button
+                type="button"
+                disabled={disableSkip}
+                onClick={() => { if (!disableSkip) onNext(); }}
+                className={`transition-colors ${
+                  disableSkip
+                    ? 'text-gray-700 cursor-not-allowed'
+                    : 'text-gray-400 hover:text-white cursor-pointer'
+                }`}
+                title={disableSkip ? 'Đang lặp 1 bài' : 'Bài tiếp theo'}
+              >
                 <SkipForward size={22} />
               </button>
             </div>
@@ -425,7 +472,7 @@ export default function MusicPlayer({
           </div>
 
           <div className="flex items-center justify-end w-1/3 gap-3 text-gray-400">
-            <button type="button" onClick={toggleMute} className="hover:text-white transition-colors">
+            <button type="button" onClick={toggleMute} className="hover:text-white transition-colors cursor-pointer">
               {isMuted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
             </button>
             <input
@@ -443,9 +490,19 @@ export default function MusicPlayer({
                 type="button"
                 onClick={onToggleQueue}
                 title="Hàng đợi phát"
-                className={`hover:text-white transition-colors ${isQueueOpen ? 'text-purple-400' : ''}`}
+                className={`hover:text-white transition-colors cursor-pointer ${isQueueOpen ? 'text-purple-400' : ''}`}
               >
                 <ListMusic size={18} />
+              </button>
+            )}
+            {onClose && (
+              <button
+                type="button"
+                onClick={() => { audioRef.current?.pause(); onClose(); }}
+                title="Tắt player"
+                className="hover:text-white transition-colors cursor-pointer ml-1"
+              >
+                <X size={16} />
               </button>
             )}
           </div>

@@ -325,7 +325,7 @@ export default function ListenerHome() {
 
   return (
     <div className="min-h-screen bg-black text-white pb-36">
-      <div className="max-w-screen-2xl mx-auto p-6">
+      <div className="max-w-4xl mx-auto px-8 py-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6 mb-2">
           <h1 className="text-xl sm:text-2xl font-bold text-white shrink-0">
             Chào {user?.name || 'Thanh Hiền'}
@@ -391,12 +391,11 @@ export default function ListenerHome() {
                   ) : pageData.length === 0 ? (
                     <div className="py-24 text-center text-gray-400">Không có bài hát phù hợp</div>
                   ) : (
-                    <div className="grid grid-cols-4 gap-1 sm:gap-1.5">
+                    <div className="grid grid-cols-4 gap-4">
                       {pageData.map((song) => (
                         <SongCard
                           key={song.song_id}
                           song={song}
-                          compact
                           contextSongs={pageData}
                           isFavorite={song.isFavorite}
                           onToggleFavorite={() => handleToggleFavorite(Number(song.song_id))}
@@ -430,12 +429,11 @@ export default function ListenerHome() {
               Chưa có gợi ý. Thử thích thêm vài bài có hashtag/ca sĩ.
             </p>
           ) : (
-            <div className="grid grid-cols-4 gap-1 sm:gap-1.5">
+            <div className="grid grid-cols-4 gap-4">
               {homeSuggestions.map((song) => (
                 <SongCard
                   key={song.song_id}
                   song={song}
-                  compact
                   contextSongs={homeSuggestions}
                   isFavorite={song.isFavorite}
                   onToggleFavorite={() => handleToggleFavorite(Number(song.song_id))}

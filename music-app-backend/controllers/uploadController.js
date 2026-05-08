@@ -37,6 +37,37 @@ const upload = multer({
 
 const uploadController = {
 
+    // POST /api/upload/hashtags — tạo hashtag mới
+    createHashtag: async (req, res) => {
+        const name = req.body.name?.trim();
+        if (!name) return res.status(400).json({ message: 'Thiếu tên hashtag' });
+        try {
+            const [[existing]] = await db.query('SELECT hashtag_id, name FROM hashtag WHERE name = ?', [name]);
+            if (existing) return res.status(200).json(existing);
+
+            const [[{ maxId }]] = await db.query('SELECT COALESCE(MAX(hashtag_id), 0) AS maxId FROM hashtag');
+            const newId = maxId + 1;
+            await db.query('INSERT INTO hashtag (hashtag_id, name) VALUES (?, ?)', [newId, name]);
+            res.status(201).json({ hashtag_id: newId, name });
+        } catch (error) {
+            console.error('Lỗi createHashtag:', error);
+            res.status(500).json({ message: 'Lỗi server' });
+        }
+    },
+
+    // GET /api/upload/hashtags — danh sách tất cả hashtag
+    getHashtags: async (req, res) => {
+        try {
+            const [rows] = await db.query(
+                'SELECT hashtag_id, name FROM hashtag ORDER BY name'
+            );
+            res.status(200).json(rows);
+        } catch (error) {
+            console.error('Lỗi getHashtags:', error);
+            res.status(500).json({ message: 'Lỗi server' });
+        }
+    },
+
     uploadMiddleware: upload.single('audio'),
 
     // POST /api/upload/songs
@@ -56,12 +87,14 @@ const uploadController = {
             const baseUrl = `${req.protocol}://${req.get('host')}`;
             const fileUrl = `${baseUrl}/audio/${req.file.filename}`;
 
-            const [result] = await db.query(
-                `INSERT INTO songs (title, file_url, lyrics, status, is_new)
-                 VALUES (?, ?, ?, 'active', 1)`,
-                [title.trim(), fileUrl, lyrics?.trim() || null]
+            const [[{ maxId }]] = await db.query('SELECT COALESCE(MAX(song_id), 0) AS maxId FROM songs');
+            const songId = maxId + 1;
+
+            await db.query(
+                `INSERT INTO songs (song_id, title, file_url, lyrics, status, is_new)
+                 VALUES (?, ?, ?, ?, 'active', 1)`,
+                [songId, title.trim(), fileUrl, lyrics?.trim() || null]
             );
-            const songId = result.insertId;
 
             // Liên kết với ca sĩ nếu có
             const ids = artistIds
@@ -75,6 +108,17 @@ const uploadController = {
                 );
             }
 
+            // Liên kết hashtag nếu có
+            const hids = req.body.hashtagIds
+                ? (Array.isArray(req.body.hashtagIds) ? req.body.hashtagIds : [req.body.hashtagIds]).map(Number).filter(Boolean)
+                : [];
+            for (const hid of hids) {
+                await db.query(
+                    'INSERT IGNORE INTO song_hashtag (songId, hashtagId) VALUES (?, ?)',
+                    [songId, hid]
+                );
+            }
+
             res.status(201).json({ song_id: songId, title: title.trim(), file_url: fileUrl });
         } catch (error) {
             fs.unlink(req.file.path, () => {});
@@ -83,9 +127,25 @@ const uploadController = {
         }
     },
 
-    // GET /api/upload/songs — danh sách tất cả bài hát kèm ca sĩ
+    // GET /api/upload/songs — danh sách bài hát, hỗ trợ ?q=&status=&page=&limit=
     getAllSongs: async (req, res) => {
+        const q = req.query.q?.trim() || '';
+        const status = req.query.status || 'all'; // all|active|pending|inactive
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+        const offset = (page - 1) * limit;
+
         try {
+            const conditions = [];
+            const params = [];
+            if (q) { conditions.push('s.title LIKE ?'); params.push(`%${q}%`); }
+            if (status !== 'all') { conditions.push('s.status = ?'); params.push(status); }
+            const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+            const [[{ total }]] = await db.query(
+                `SELECT COUNT(*) AS total FROM songs s ${where}`, params
+            );
+
             const [rows] = await db.query(`
                 SELECT s.song_id, s.title, s.file_url, s.status, s.is_new,
                        s.play_count, s.like_count, s.lyrics,
@@ -96,8 +156,12 @@ const uploadController = {
                            'Chưa xác định'
                        ) AS artist
                 FROM songs s
-                ORDER BY s.song_id DESC`);
-            res.status(200).json(rows);
+                ${where}
+                ORDER BY s.song_id DESC
+                LIMIT ? OFFSET ?`,
+                [...params, limit, offset]
+            );
+            res.status(200).json({ songs: rows, total, page, limit });
         } catch (error) {
             console.error('Lỗi getAllSongs upload:', error);
             res.status(500).json({ message: 'Lỗi server' });
@@ -130,6 +194,11 @@ const uploadController = {
                 'SELECT artist_id FROM song_artists WHERE song_id = ? ORDER BY display_order', [id]
             );
             song.artistIds = artistRows.map(r => r.artist_id);
+
+            const [hashtagRows] = await db.query(
+                'SELECT hashtagId FROM song_hashtag WHERE songId = ? ORDER BY hashtagId', [id]
+            );
+            song.hashtagIds = hashtagRows.map(r => r.hashtagId);
             res.json(song);
         } catch (error) {
             console.error('Lỗi getSong:', error);
@@ -169,10 +238,18 @@ const uploadController = {
                 fileUrl = `${baseUrl}/audio/${req.file.filename}`;
             }
 
-            await db.query(
-                'UPDATE songs SET title = ?, file_url = ?, lyrics = ? WHERE song_id = ?',
-                [title.trim(), fileUrl, lyrics?.trim() || null, id]
-            );
+            const newStatus = ['active','pending','inactive'].includes(req.body.status) ? req.body.status : undefined;
+            if (newStatus) {
+                await db.query(
+                    'UPDATE songs SET title = ?, file_url = ?, lyrics = ?, status = ? WHERE song_id = ?',
+                    [title.trim(), fileUrl, lyrics?.trim() || null, newStatus, id]
+                );
+            } else {
+                await db.query(
+                    'UPDATE songs SET title = ?, file_url = ?, lyrics = ? WHERE song_id = ?',
+                    [title.trim(), fileUrl, lyrics?.trim() || null, id]
+                );
+            }
 
             // Cập nhật ca sĩ: xóa cũ → thêm mới
             await db.query('DELETE FROM song_artists WHERE song_id = ?', [id]);
@@ -183,6 +260,18 @@ const uploadController = {
                 await db.query(
                     'INSERT INTO song_artists (song_id, artist_id, display_order) VALUES (?, ?, ?)',
                     [id, ids[i], i + 1]
+                );
+            }
+
+            // Sync hashtag
+            const hids = req.body.hashtagIds
+                ? (Array.isArray(req.body.hashtagIds) ? req.body.hashtagIds : [req.body.hashtagIds]).map(Number).filter(Boolean)
+                : [];
+            await db.query('DELETE FROM song_hashtag WHERE songId = ?', [id]);
+            for (const hid of hids) {
+                await db.query(
+                    'INSERT IGNORE INTO song_hashtag (songId, hashtagId) VALUES (?, ?)',
+                    [id, hid]
                 );
             }
 
@@ -222,6 +311,24 @@ const uploadController = {
         } catch (error) {
             console.error('Lỗi checkSongFile:', error);
             res.status(500).json({ ok: false, reason: 'Lỗi server' });
+        }
+    },
+
+    // PATCH /api/upload/songs/:id/status — đổi status (approve/pending/inactive)
+    updateStatus: async (req, res) => {
+        const { id } = req.params;
+        const { status } = req.body;
+        const allowed = ['active', 'pending', 'inactive'];
+        if (!allowed.includes(status)) {
+            return res.status(400).json({ message: 'Status không hợp lệ' });
+        }
+        try {
+            const [result] = await db.query('UPDATE songs SET status = ? WHERE song_id = ?', [status, id]);
+            if (result.affectedRows === 0) return res.status(404).json({ message: 'Không tìm thấy bài hát' });
+            res.json({ song_id: id, status });
+        } catch (error) {
+            console.error('Lỗi updateStatus:', error);
+            res.status(500).json({ message: 'Lỗi server' });
         }
     },
 

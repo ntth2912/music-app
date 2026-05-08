@@ -14,18 +14,23 @@ cron.schedule('0 * * * *', async () => {
         await conn.query('DELETE FROM top_charts');
 
         // 2. Chạy SQL Weighted Scoring (khớp với logic "anh trưởng" đã duyệt)
+        // Play score: tối đa 1 điểm/lượt, scale theo listened_seconds (ngưỡng 30s = đủ điểm)
+        // Decay theo thời gian: sự kiện trong 7 ngày gần nhất được tính, xa hơn giảm dần
         const [trending] = await conn.query(`
-            SELECT song_id, 
-            SUM(CASE 
-               WHEN event_type = 'play' THEN 1
-               WHEN event_type = 'like' THEN 3
-               WHEN event_type = 'saved' THEN 2 
-               WHEN event_type = 'skip' THEN -2
+            SELECT song_id,
+            SUM(CASE
+               WHEN event_type = 'play' THEN
+                   LEAST(COALESCE(listened_seconds, 30) / 30.0, 1.0)
+                   * EXP(-0.05 * GREATEST(TIMESTAMPDIFF(HOUR, created_at, NOW()), 0) / 24.0)
+               WHEN event_type = 'like'  THEN 3
+               WHEN event_type = 'saved' THEN 2
+               WHEN event_type = 'skip'  THEN -2
                ELSE 0 END) AS calculated_score
             FROM user_events
+            WHERE created_at >= NOW() - INTERVAL 30 DAY
             GROUP BY song_id
             HAVING calculated_score > 0
-            ORDER BY calculated_score DESC 
+            ORDER BY calculated_score DESC
             LIMIT 50
         `);
 
